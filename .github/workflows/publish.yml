@@ -1,0 +1,46 @@
+name: Geprueften Windows-Release veroeffentlichen
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Vorbereiteter stabiler Release-Tag, z. B. v1.2.0
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: publish-windows
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - name: Entwurf herunterladen, Signatur pruefen und veroeffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          node --input-type=module <<'JS'
+          import {execFileSync} from 'node:child_process';
+          import {mkdir,writeFile} from 'node:fs/promises';
+          import {verifyRelease} from './scripts/verify-release.mjs';
+          const tag=process.env.RELEASE_TAG;
+          if(!/^v\d+\.\d+\.\d+$/.test(tag))throw new Error('Kein stabiler Release-Tag');
+          const repo=process.env.GITHUB_REPOSITORY,dir=process.env.RUNNER_TEMP+'/windows-release';
+          const gh=args=>execFileSync('gh',args,{encoding:'utf8'});
+          const release=JSON.parse(gh(['release','view',tag,'--repo',repo,'--json','isDraft,isPrerelease']));
+          if(!release.isDraft||release.isPrerelease)throw new Error('Vollstaendiger stabiler Entwurf erforderlich');
+          await mkdir(dir,{recursive:true});
+          execFileSync('gh',['release','download',tag,'--repo',repo,'--dir',dir],{stdio:'inherit'});
+          const manifest=await verifyRelease(dir,'update-public-key.txt',tag);
+          const notes=process.env.RUNNER_TEMP+'/notes.md';await writeFile(notes,manifest.notes+'\n');
+          execFileSync('gh',['release','edit',tag,'--repo',repo,'--draft=false','--latest','--notes-file',notes],{stdio:'inherit'});
+          console.log(`Version ${manifest.version} vollstaendig geprueft und veroeffentlicht.`);
+          JS
