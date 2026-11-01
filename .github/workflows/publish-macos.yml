@@ -1,0 +1,47 @@
+name: Geprueften Mac-Release veroeffentlichen
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stabiler Mac-Tag, z. B. mac-v1.3.0
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: publish-macos
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - name: Mac-Entwurf pruefen, veroeffentlichen und Kanal aktualisieren
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          node --input-type=module <<'JS'
+          import {execFileSync} from 'node:child_process';
+          import {mkdir,readFile,writeFile} from 'node:fs/promises';
+          import {verifyMacRelease} from './scripts/verify-macos-release.mjs';
+          const tag=process.env.RELEASE_TAG,repo=process.env.GITHUB_REPOSITORY;
+          if(!/^mac-v\d+\.\d+\.\d+$/.test(tag))throw Error('Kein stabiler Mac-Tag');
+          const gh=args=>execFileSync('gh',args,{encoding:'utf8',maxBuffer:4e6,stdio:['ignore','pipe','pipe']});
+          const release=JSON.parse(gh(['release','view',tag,'--repo',repo,'--json','isDraft,isPrerelease']));
+          if(!release.isDraft||release.isPrerelease)throw Error('Vollstaendiger Mac-Entwurf erforderlich');
+          const folder=process.env.RUNNER_TEMP+'/mac-release';await mkdir(folder,{recursive:true});execFileSync('gh',['release','download',tag,'--repo',repo,'--dir',folder],{stdio:'inherit'});
+          const manifest=await verifyMacRelease(folder,'update-public-key.txt',tag),notes=process.env.RUNNER_TEMP+'/mac-notes.md';await writeFile(notes,manifest.notes+'\n');
+          execFileSync('gh',['release','edit',tag,'--repo',repo,'--draft=false','--latest=false','--notes-file',notes],{stdio:'inherit'});
+          const latest=JSON.parse(gh(['api',`repos/${repo}/releases/latest`]));if(latest.tag_name.startsWith('mac-v'))throw Error('Mac darf den Windows-Latest-Kanal nicht ersetzen');
+          async function put(name,bytes){let sha;try{sha=JSON.parse(gh(['api',`repos/${repo}/contents/${name}`])).sha}catch{}const args=['api','--method','PUT',`repos/${repo}/contents/${name}`,'-f','message='+`Mac ${manifest.version}: geprueften Updatekanal aktualisieren`,'-f','content='+Buffer.from(bytes).toString('base64'),'-f','branch=main'];if(sha)args.push('-f','sha='+sha);gh(args);}
+          const page=`# Design to Cost für Mac\n\nAktuelle Version: **${manifest.version}**, für Intel und Apple Silicon.\n\n[Mac-Release öffnen](https://github.com/${repo}/releases/tag/${tag})\n\n- [DMG herunterladen](${manifest.packages.disk_image.url})\n- [ZIP herunterladen](${manifest.packages.macos.url})\n\nDie App arbeitet vollständig lokal und offline. Für Updates sind Internet und eine ausdrückliche Auswahl erforderlich. Installation in einem eigenen beschreibbaren Ordner ist ohne Administratorrechte möglich.\n\nDiese Ausgabe besitzt kein Apple-Developer-ID-Zertifikat und ist nicht notarisiert. Falls macOS die App beim ersten Öffnen blockiert, nach dem Öffnungsversuch in Systemeinstellungen → Datenschutz & Sicherheit die Option Dennoch öffnen für diese App verwenden. [Anleitung von Apple](https://support.apple.com/de-de/102445).\n\nProjekte und Einstellungen liegen ausserhalb des Programmpakets und bleiben bei Updates erhalten. Die Pakete und der Updatekanal werden kryptografisch geprüft. Der Mac-Kanal ist unabhängig von den bestehenden Windows-Downloads; der App-Quellcode bleibt privat.\n`;
+          await put('macos/README.md',page);await put('macos/update-manifest.json',await readFile(folder+'/update-manifest.json'));
+          console.log(JSON.stringify({published:true,tag,mac_feed_updated:true,windows_latest:latest.tag_name}));
+          JS
