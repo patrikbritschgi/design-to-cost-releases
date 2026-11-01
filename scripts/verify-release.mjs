@@ -22,10 +22,14 @@ export async function verifyRelease(folder,keyFile,tag){
  }
  const present=await readdir(folder);if(present.length!==expected.size||present.some(n=>!expected.has(n)))throw new Error('Unexpected public files');
  if((await readFile(path.join(folder,'update-manifest.sig'),'utf8')).trim()!==envelope.signature)throw new Error('Signature file mismatch');
+ const covered=new Set();
  for(const line of (await readFile(path.join(folder,'SHA256SUMS.txt'),'utf8')).trim().split(/\r?\n/)){
-  const match=/^([a-f0-9]{64})  ([^/\\]+)$/.exec(line);if(!match||!expected.has(match[2])||await digest(path.join(folder,match[2]))!==match[1])throw new Error('Checksum file mismatch');
+  const match=/^([a-f0-9]{64})  ([^/\\]+)$/.exec(line);if(!match||!expected.has(match[2])||match[2]==='SHA256SUMS.txt'||covered.has(match[2])||await digest(path.join(folder,match[2]))!==match[1])throw new Error('Checksum file mismatch');covered.add(match[2]);
  }
+ if(covered.size!==expected.size-1)throw new Error('Incomplete checksum file');
  const build=JSON.parse(await readFile(path.join(folder,'BUILD.json'),'utf8')),tests=JSON.parse(await readFile(path.join(folder,'TEST-SUMMARY.json'),'utf8'));
+ const allowedTests=new Set(['version','source_commit','environment','rust_tests_passed','frontend_tests_passed','native_window','offline','no_admin','updates','digitally_signed']);
+ if(Object.keys(tests).some(k=>!allowedTests.has(k))||!tests.rust_tests_passed||!tests.frontend_tests_passed||Object.keys(tests.updates||{}).length<20||Object.entries(tests.updates||{}).some(([k,v])=>!/^[_a-z0-9]+$/.test(k)||v!==true))throw new Error('Incomplete or unexpected public test summary');
  const allowedBuild=new Set(['version','target','source_commit','features','release_optimization','release_lto','digitally_signed','update_verification','runtime','binaries']);
  if(Object.keys(build).some(k=>!allowedBuild.has(k))||build.source_commit!==m.source_commit||build.version!==m.version||tests.version!==m.version||tests.source_commit!==m.source_commit||!tests.no_admin||!tests.offline||!tests.native_window||!tests.updates||!Object.values(tests.updates).every(Boolean))throw new Error('Public build evidence mismatch');
  if(/C:\\\\Users\\\\|\/Users\//i.test(JSON.stringify(build)+JSON.stringify(tests)))throw new Error('Private build paths must not be published');
