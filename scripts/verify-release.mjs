@@ -28,8 +28,14 @@ export async function verifyRelease(folder,keyFile,tag){
  }
  if(covered.size!==expected.size-1)throw new Error('Incomplete checksum file');
  const build=JSON.parse(await readFile(path.join(folder,'BUILD.json'),'utf8')),tests=JSON.parse(await readFile(path.join(folder,'TEST-SUMMARY.json'),'utf8'));
- const allowedTests=new Set(['version','source_commit','environment','rust_tests_passed','frontend_tests_passed','native_window','offline','no_admin','updates','digitally_signed']);
+ const dashboardTests=['dashboard_no_group_card','four_theme_dashboard','dashboard_zoom_200_layout'];
+ const allowedTests=new Set(['version','source_commit','environment','rust_tests_passed','frontend_tests_passed','native_window','offline','no_admin','updates','digitally_signed',...dashboardTests]);
  if(Object.keys(tests).some(k=>!allowedTests.has(k))||!tests.rust_tests_passed||!tests.frontend_tests_passed||Object.keys(tests.updates||{}).length<20||Object.entries(tests.updates||{}).some(([k,v])=>!/^[_a-z0-9]+$/.test(k)||v!==true))throw new Error('Incomplete or unexpected public test summary');
+ // Earlier immutable releases predate these fields. From 1.3.2 onward the
+ // three actual dashboard checks are mandatory, and must be true when present.
+ const [major,minor,patch]=m.version.split('.').map(Number);
+ const dashboardRequired=major>1||(major===1&&(minor>3||(minor===3&&patch>=2)));
+ if(dashboardTests.some(k=>(dashboardRequired||k in tests)&&tests[k]!==true))throw new Error('Complete dashboard evidence required');
  const allowedBuild=new Set(['version','target','source_commit','features','release_optimization','release_lto','digitally_signed','update_verification','runtime','binaries']);
  if(Object.keys(build).some(k=>!allowedBuild.has(k))||build.source_commit!==m.source_commit||build.version!==m.version||tests.version!==m.version||tests.source_commit!==m.source_commit||!tests.no_admin||!tests.offline||!tests.native_window||!tests.updates||!Object.values(tests.updates).every(Boolean))throw new Error('Public build evidence mismatch');
  if(/C:\\\\Users\\\\|\/Users\//i.test(JSON.stringify(build)+JSON.stringify(tests)))throw new Error('Private build paths must not be published');
